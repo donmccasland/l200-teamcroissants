@@ -130,6 +130,12 @@ if length_of_response == "Short":
 else:
     max_output_tokens = 8192
 
+enable_rag = st.radio(
+    "Use RAG: \n\n",
+    ["No-RAG", "RAG"],
+    horizontal=True,
+)
+
 prompt = f"""Provide a {length_of_response} and answer to {question_body} \n
     Response should be step by step and based on Google Architecture Centre Documentation. 
     If the length of response is "short" then make sure to have 2 paragraph or else if it is "long" then respond with between 4 to 6 paragraphs maximum.
