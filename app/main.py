@@ -2,22 +2,31 @@
 from anthropic import AnthropicVertex
 import os
 import streamlit as st
+### Google Vertex AI imports
+from google.cloud import aiplatform
 import vertexai
-from vertexai.generative_models import (
+from vertexai.preview.generative_models import (
     GenerationConfig,
     GenerativeModel,
     HarmBlockThreshold,
     HarmCategory,
+    Tool,
+    grounding
 )
 from vertexai.preview.vision_models import ImageGenerationModel
 
+#Basic environment settings
 PROJECT_ID = os.environ.get("GCP_PROJECT")
 LOCATION = 'us-east5'
+VS_REGION = "us-central1"
+DATASTORE_ID = "cloud-arch-center-datastore_1729197031195"
+
 
 vertexai.init(project=PROJECT_ID, location=LOCATION)
 
+
 # --- Anthropic Setup ---
-client = AnthropicVertex(region=LOCATION, project_id="team-croissants-l200")
+client = AnthropicVertex(region=LOCATION, project_id=PROJECT_ID)
 
 @st.cache_resource
 def load_models():
@@ -30,11 +39,13 @@ def load_models():
 
 def get_gemini_response(
     model: GenerativeModel,
+    tool: Tool,
     contents: str | list,
     generation_config: GenerationConfig = GenerationConfig(
         temperature=0.1, max_output_tokens=2048
     ),
     stream: bool = True,
+    rag: bool = False
 ) -> str:
     """Generate a response from the Gemini model."""
     safety_settings = {
@@ -44,12 +55,22 @@ def get_gemini_response(
         HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_ONLY_HIGH,
     }
 
-    responses = model.generate_content(
-        contents,
-        generation_config=generation_config,
-        safety_settings=safety_settings,
-        stream=stream,
-    )
+#>>> response.candidates[0].grounding_metadata.grounding_chunks
+    if (rag):
+        responses = model.generate_content(
+            contents,
+            tools=[tool],
+            generation_config=generation_config,
+            safety_settings=safety_settings,
+            stream=stream,
+        )
+    else:
+        responses = model.generate_content(
+            contents,
+            generation_config=generation_config,
+            safety_settings=safety_settings,
+            stream=stream,
+        )
 
     if not stream:
         return responses.text
@@ -99,8 +120,29 @@ def get_storage_url(gcs_uri: str) -> str:
     return "https://storage.googleapis.com/" + gcs_uri.split("gs://")[1]
 
 
+def prepare_prompt(query: str, length: str, rag: bool) -> str:
+    """Prepare prompt using template and RAG context if requested"""
+    if rag:
+        prompt = f"""Provide a {length} and answer to {query} \n
+        Response should be step by step and based on Google Architecture Centre Documentation. 
+        Include URLs to relevant articles in the Google Architecture Centre Documentation.
+        If the length of response is "short" then make sure to have 2 paragraph or else if it is "long" then respond with between 4 to 6 paragraphs maximum.
+        Include Terraform if applicable, always generate an illustrative architecture diagram
+        Important point is that each response should be generated based on the premise given above.
+         """
+    else:
+        prompt = f"""Provide a {length} and answer to {query} \n
+        Response should be step by step and based on Google Architecture Centre Documentation. 
+        If the length of response is "short" then make sure to have 2 paragraph or else if it is "long" then respond with between 4 to 6 paragraphs maximum.
+        Include Terraform if applicable, always generate an illustrative architecture diagram
+        Important point is that each response should be generated based on the premise given above.
+         """
+
+    return prompt
+
 st.header("Not so awesome design generator", divider="rainbow")
 gemini_15_flash, gemini_15_pro, claude_model = load_models()
+groundtool = Tool.from_google_search_retrieval(grounding.GoogleSearchRetrieval())
 
 # --- Chat with me ---
 st.subheader("What do you want to build")
@@ -136,12 +178,8 @@ enable_rag = st.radio(
     horizontal=True,
 )
 
-prompt = f"""Provide a {length_of_response} and answer to {question_body} \n
-    Response should be step by step and based on Google Architecture Centre Documentation. 
-    If the length of response is "short" then make sure to have 2 paragraph or else if it is "long" then respond with between 4 to 6 paragraphs maximum.
-    Include Terraform if applicable, always generate an illustrative architecture diagram
-    Important point is that each response should be generated based on the premise given above.
-    """
+prompt = prepare_prompt(query=question_body, length=length_of_response, rag=enable_rag)
+
 config = GenerationConfig(
     max_output_tokens=max_output_tokens
 )
@@ -155,8 +193,10 @@ if generate_t2t and question_body:
         if isinstance(selected_model, GenerativeModel):
             response = get_gemini_response(
                 selected_model,
+                groundtool,
                 prompt,
                 generation_config=config,
+                rag=enable_rag
             )
         else:  # Anthropic
             response = get_anthropic_response(
